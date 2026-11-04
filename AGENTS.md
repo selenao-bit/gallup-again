@@ -14,7 +14,10 @@ existing code conventions. Do not turn brainstorming into requirements.
 - Enforce self/direct-report access in backend queries. Manager access does not
   grant access to an employee's inbox. Email requires message-level participation;
   sharing a thread is insufficient. Preserve BCC privacy and plain-text rendering.
-- Private notes, peer feedback and email are excluded from AI context. Reviews and
+- Private notes and peer feedback are excluded from AI context. Synthetic email
+  retrieval is authorized only for messages the actor sent/received; in a manager
+  report view the selected direct report must also participate. Never expose BCC
+  recipient lists in AI context. Reviews and
   self-assessments remain self-only until manager field policy is approved.
 - Q12 is group context, with suppression flags and a minimum of five responses;
   never individual performance, rankings or employment recommendations.

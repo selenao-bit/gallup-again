@@ -20,7 +20,8 @@ class Persona(BaseModel):
 class PersonaList(BaseModel):
     demo: Literal[True] = True
     personas: list[Persona]
-    assistant_mode: Literal['simulated', 'openai']
+    assistant_available: bool = False
+    assistant_mode: Literal['simulated', 'openai', 'azure']
 
 class CurrentPersona(BaseModel):
     demo: Literal[True] = True
@@ -78,6 +79,6 @@ class AnswerContent(BaseModel):
     cited_record_ids: list[str]
 
 class ChatAnswer(AnswerContent):
-    mode: Literal['simulated', 'openai']
+    mode: Literal['simulated', 'openai', 'azure']
     sources: list[Source]
     scope_note: str

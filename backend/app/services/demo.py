@@ -4,6 +4,7 @@ from ..config import Settings
 from ..demo_models import CurrentPersona, Dashboard, EmployeeSummary, Metric, Persona, PersonaList, ReportPage, Source
 from ..repositories.demo import DemoRepository
 from .access import Actor, DemoError, PERSONAS, require_manager, unavailable
+from .progress import completion_metric
 
 class DemoService:
     def __init__(self, repository: DemoRepository, settings: Settings):
@@ -42,16 +43,9 @@ class DemoService:
         for table, (counts, rows) in result['results'].items():
             is_task = table == 'project_tasks'
             statuses = {r['status']: r['count'] for r in counts}
-            excluded, completed_status = ('Cancelled', 'Complete') if is_task else ('Withdrawn', 'Completed')
-            total = sum(statuses.values())
-            denominator = total - statuses.get(excluded, 0)
-            completed = statuses.get(completed_status, 0)
             key = 'tasks' if is_task else 'training'
-            definition = ('Complete / all non-Cancelled assigned tasks; Suspended included.' if is_task else
-                          'Completed / all non-Withdrawn training assignments; Expired included.')
-            metrics[key] = Metric(total=total, completed=completed, denominator=denominator,
-                completion_pct=round(completed/denominator*100, 1) if denominator else None,
-                statuses=statuses, definition=definition)
+            metrics[key] = completion_metric(statuses, key)
+            total = metrics[key].total
             for r in rows:
                 sources.append(Source(record_id=f"{table}:{r['id']}", record_type=table,
                     label=r['label'], status=r['status'], date=r['date'], date_label='Completion date'))

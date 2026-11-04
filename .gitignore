@@ -37,3 +37,6 @@ Thumbs.db
 
 # Other
 /dev/personal/
+
+# Local generated fixtures and import evidence
+local-fixtures/

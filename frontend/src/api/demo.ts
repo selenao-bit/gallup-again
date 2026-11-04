@@ -5,13 +5,13 @@ export interface Employee {
   department_name: string | null; employment_status: string
 }
 export interface Persona { employee_id: number; display_name: string; role: 'manager' | 'employee' | 'hr_admin' }
-export interface Catalog { demo: true; personas: Persona[]; assistant_mode: 'simulated' | 'openai' }
+export interface Catalog { demo: true; personas: Persona[]; assistant_mode: 'simulated' | 'openai' | 'azure'; assistant_available?: boolean }
 export interface Current { persona: Persona; employee: Employee }
 export interface ReportPage { reports: Employee[]; next_after_employee_id: number | null }
 export interface Metric { total: number; completed: number; denominator: number; completion_pct: number | null; statuses: Record<string, number>; definition: string }
 export interface Source { record_id: string; record_type: string; label: string; status: string; date: string | null; date_label: string }
 export interface Dashboard { employee: Employee; team_name: string | null; hire_date: string; role_start_date: string; as_of: string; tasks: Metric; training: Metric; sources: Source[]; data_gaps: string[] }
-export interface Answer { answer: string; suggested_approach: string[]; strengths_to_acknowledge: string[]; data_gaps: string[]; sources: Source[]; mode: 'simulated' | 'openai'; scope_note: string }
+export interface Answer { answer: string; suggested_approach: string[]; strengths_to_acknowledge: string[]; data_gaps: string[]; sources: Source[]; mode: 'simulated' | 'openai' | 'azure'; scope_note: string }
 export const STARTER = 'Summarize recorded task and training progress.'
 
 export class ApiError extends Error {

@@ -1,7 +1,7 @@
 """Contracts shared by employee record viewing and bounded AI retrieval."""
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
-from .demo_models import EmployeeSummary
+from .demo_models import EmployeeSummary, Metric
 
 class Record(BaseModel):
     record_id: str
@@ -16,6 +16,7 @@ class RecordBundle(BaseModel):
     records: list[Record]
     counts: dict[str, int]
     gaps: list[str]
+    task_progress: Metric | None = None
 
 class WorkspaceQuestion(BaseModel):
     model_config = ConfigDict(extra='forbid')
@@ -31,4 +32,4 @@ class WorkspaceAnswer(BaseModel):
 class AnswerResult(BaseModel):
     content: WorkspaceAnswer
     sources: list[Record]
-    mode: Literal['openai'] = 'openai'
+    mode: Literal['openai','azure'] = 'openai'

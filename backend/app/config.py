@@ -4,6 +4,7 @@ import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError, field_validator
@@ -24,9 +25,43 @@ class Settings(BaseModel):
     database_url: SecretStr
     demo_identity_enabled: bool = False
     demo_diagnostics: bool = False
-    assistant_mode: Literal["simulated", "openai"] = "simulated"
+    assistant_mode: Literal["simulated", "openai", "azure"] = "simulated"
     openai_api_key: SecretStr | None = None
     openai_model: str = "gpt-4.1-mini"
+    azure_openai_key: SecretStr | None = None
+    azure_endpoint: str | None = None
+    azure_deployment: str | None = None
+    azure_api_version: str = "2025-03-01-preview"
+    azure_reasoning_effort: Literal["none","low","medium","high"] | None = None
+
+    @field_validator("azure_endpoint")
+    @classmethod
+    def validate_azure_endpoint(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        try:
+            url = urlsplit(value.strip())
+            domains = ('.openai.azure.com', '.cognitiveservices.azure.com', '.services.ai.azure.com')
+            if (url.scheme != 'https' or not url.hostname or not url.hostname.endswith(domains)
+                    or url.username or url.password or url.port not in (None,443)
+                    or url.path not in ('','/') or url.query or url.fragment):
+                raise ValueError
+        except ValueError:
+            raise ValueError('Azure endpoint must be an HTTPS Azure resource root URL') from None
+        return value.strip().rstrip('/') + '/'
+
+    @property
+    def assistant_available(self) -> bool:
+        if self.assistant_mode == 'azure':
+            return bool(self.azure_openai_key and self.azure_openai_key.get_secret_value().strip()
+                        and self.azure_endpoint and self.azure_deployment and self.azure_deployment.strip())
+        return bool(self.assistant_mode == 'openai' and self.openai_api_key
+                    and self.openai_api_key.get_secret_value().strip())
+
+    @property
+    def assistant_model(self) -> str:
+        return (self.azure_deployment or '').strip() if self.assistant_mode == 'azure' else self.openai_model
+
 
     @field_validator("database_url")
     @classmethod
@@ -71,6 +106,21 @@ class Settings(BaseModel):
             file_values = dotenv_values(ROOT_ENV_PATH, interpolate=False)
             def setting(name: str, default=None):
                 return environment.get(name, file_values.get(name, default))
+            def alias(*names, default=None):
+                for name in names:
+                    if name in environment:
+                        return environment[name]
+                for name in names:
+                    if name in file_values:
+                        return file_values[name]
+                return default
+            endpoint = alias('AZURE_OPENAI_ENDPOINT')
+            resource = alias('GW_AZURE_RESOURCE')
+            if not endpoint and resource:
+                import re
+                if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9-]*', resource):
+                    raise ValueError('Invalid Azure resource name')
+                endpoint = f'https://{resource}.openai.azure.com/'
             return cls(
                 database_url=SecretStr(value),
                 demo_identity_enabled=setting("DEMO_IDENTITY_ENABLED", "false"),
@@ -78,8 +128,13 @@ class Settings(BaseModel):
                 assistant_mode=setting("ASSISTANT_MODE", "simulated"),
                 openai_api_key=setting("OPENAI_API_KEY"),
                 openai_model=setting("OPENAI_MODEL", "gpt-4.1-mini"),
+                azure_openai_key=alias('GW_AZURE_OPENAI_KEY','AZURE_OPENAI_API_KEY'),
+                azure_endpoint=endpoint,
+                azure_deployment=alias('GW_AZURE_MODEL','AZURE_OPENAI_DEPLOYMENT'),
+                azure_api_version=alias('AZURE_OPENAI_API_VERSION',default='2025-03-01-preview'),
+                azure_reasoning_effort=alias('AZURE_OPENAI_REASONING_EFFORT'),
             )
-        except ValidationError:
+        except (ValidationError, ValueError):
             raise ConfigurationError(
                 "DATABASE_URL is invalid or demo/assistant settings are invalid; use a "
                 "single-host PostgreSQL URL and documented configuration values. "

@@ -1,9 +1,10 @@
 """Read-only, explicit PostgreSQL projections; never reads private manager notes."""
 from datetime import date, datetime
-from sqlalchemy import text
+from sqlalchemy import text, bindparam
 from ..demo_models import Persona, EmployeeSummary
 from ..workspace_models import Record, RecordBundle
 from ..services.access import Actor, DemoError
+from ..services.progress import completion_metric
 from .demo import PROFILE, TARGET_STATUSES, scoped, scope_params, SCOPE
 
 # All identifiers/projections are fixed in code, not model or request arguments.
@@ -29,7 +30,7 @@ class WorkspaceRepository:
 
     def personas(self):
         with self.database.read() as c:
-            return c.execute(text(PROFILE.replace(' FROM public.employees', ", EXISTS (SELECT 1 FROM public.employees r WHERE r.supervisor_id=e.employee_id AND r.employee_id<>e.employee_id AND r.employment_status IN ('Active','Leave')) AS has_reports FROM public.employees", 1) + " WHERE e.employment_status='Active' ORDER BY e.employee_id")).mappings().all()
+            return c.execute(text(PROFILE.replace(' FROM public.employees', ', managers.supervisor_id IS NOT NULL AS has_reports FROM public.employees', 1) + " LEFT JOIN (SELECT supervisor_id FROM public.employees WHERE employee_id<>supervisor_id AND employment_status IN ('Active','Leave') GROUP BY supervisor_id) managers ON managers.supervisor_id=e.employee_id WHERE e.employment_status='Active' ORDER BY e.employee_id")).mappings().all()
 
     def persona(self, employee_id):
         with self.database.read() as c:
@@ -71,9 +72,12 @@ class WorkspaceRepository:
                     records.append(Record(record_id=f'{table}:{row[key]}',category=category,title=str(row[title]),
                         status=row[status] if status else None,date=record_date,fields=fields))
                 if counts[category] > len(rows): gaps.append(f'{category}: showing the latest 200 of {counts[category]} records.')
-            if not own: gaps.append('Private notes, peer feedback, reviews, self-assessments and email are excluded from manager preparation.')
+            if not own: gaps.append('Private notes, peer feedback, reviews and self-assessments are excluded from manager preparation. Email context is limited separately to messages involving both the manager and this direct report.')
             gaps.append('Goals have recorded statuses and dates; an end date is not evidence of actual completion time.')
-            return RecordBundle(employee=EmployeeSummary(**profile),records=records,counts=counts,gaps=gaps)
+            prepare = text if own else scoped
+            task_rows = c.execute(prepare('SELECT r.task_status AS status, count(*) AS count FROM public.project_tasks r JOIN public.employees e ON e.employee_id=r.employee_id WHERE '+predicate+' GROUP BY r.task_status'),params).mappings().all()
+            progress = completion_metric({r['status']:r['count'] for r in task_rows},'tasks')
+            return RecordBundle(employee=EmployeeSummary(**profile),records=records,counts=counts,gaps=gaps,task_progress=progress)
 
     def emails(self, actor: Actor, before: int | None):
         # Enforce message-level participation, including when messages share a thread.
@@ -82,28 +86,46 @@ class WorkspaceRepository:
             rows=c.execute(text('''SELECT m.email_id,m.thread_id,m.sender_id,m.sent_at,m.subject,m.body,m.reply_to_id,
                 m.has_attachments, s.employee_fname || ' ' || s.employee_lname AS sender_name
                 FROM public.email_records m JOIN public.employees s ON s.employee_id=m.sender_id
-                WHERE (m.sender_id=:id OR EXISTS (SELECT 1 FROM public.email_recipients r
-                    WHERE r.email_id=m.email_id AND r.recipient_id=:id))
+                JOIN (SELECT email_id FROM public.email_records WHERE sender_id=:id
+                      UNION SELECT email_id FROM public.email_recipients WHERE recipient_id=:id) permitted
+                    ON permitted.email_id=m.email_id
+                WHERE TRUE
                 AND (CAST(:before AS INTEGER) IS NULL OR m.email_id<:before)
                 ORDER BY m.email_id DESC LIMIT 51'''),{'id':actor.employee_id,'before':before}).mappings().all()
-            messages=[]
-            for row in rows[:50]:
-                recipients=c.execute(text('''SELECT r.recipient_id,r.recipient_type,e.employee_fname || ' ' || e.employee_lname AS name
+            recipient_map = {}
+            if rows:
+                recipient_rows = c.execute(text('''SELECT r.email_id,r.recipient_id,r.recipient_type,
+                    e.employee_fname || ' ' || e.employee_lname AS name
                     FROM public.email_recipients r JOIN public.employees e ON e.employee_id=r.recipient_id
-                    WHERE r.email_id=:message AND (r.recipient_type<>'bcc' OR :id=:sender OR r.recipient_id=:id)
-                    ORDER BY r.recipient_type,r.recipient_id'''),{'message':row['email_id'],'id':actor.employee_id,'sender':row['sender_id']}).mappings().all()
-                messages.append({**{k:scalar(v) for k,v in row.items()}, 'recipients':[dict(r) for r in recipients]})
+                    JOIN public.email_records m ON m.email_id=r.email_id
+                    WHERE r.email_id IN :message_ids AND (r.recipient_type<>'bcc' OR m.sender_id=:id OR r.recipient_id=:id)
+                    ORDER BY r.email_id,r.recipient_type,r.recipient_id''').bindparams(bindparam('message_ids',expanding=True)),
+                    {'message_ids':[r['email_id'] for r in rows[:50]],'id':actor.employee_id}).mappings().all()
+                for recipient in recipient_rows:
+                    fields = dict(recipient)
+                    message_id = fields.pop('email_id')
+                    recipient_map.setdefault(message_id,[]).append(fields)
+            messages=[{**{k:scalar(v) for k,v in row.items()},'recipients':recipient_map.get(row['email_id'],[])} for row in rows[:50]]
             return {'addresses':addresses,'messages':messages,'next_before':rows[49]['email_id'] if len(rows)>50 else None,
                     'scope_note':'Only messages this persona sent or received. Other messages in the same thread remain hidden. Attachments are not stored here.'}
 
-    def engagement(self, actor):
+    def engagement(self, actor, subject_id=None):
+        subject_id = actor.employee_id if subject_id is None else subject_id
+        if subject_id != actor.employee_id and actor.role != 'manager':
+            raise DemoError(403, 'access_denied', 'Manager access required.')
         with self.database.read() as c:
             groups=c.execute(text('''SELECT g.group_id,g.group_name,g.group_type FROM public.q12_groups g
-                JOIN public.employees e ON e.employee_id=:id AND e.employment_status='Active'
-                WHERE g.group_type='Company' OR (g.group_type='Team' AND g.team_id=e.team_id)
-                   OR (g.group_type='Department' AND g.department_id=e.department_id)
-                ORDER BY g.group_id'''),{'id':actor.employee_id}).mappings().all()
-            surveys=c.execute(text('SELECT survey_id,reporting_period FROM public.q12_surveys ORDER BY start_date DESC')).mappings().all()
+                JOIN public.employees e ON e.employee_id=:subject
+                WHERE EXISTS (SELECT 1 FROM public.employees a WHERE a.employee_id=:id AND a.employment_status='Active')
+                AND ((e.employee_id=:id AND e.employment_status='Active') OR
+                    (e.supervisor_id=:id AND e.employee_id<>:id AND e.employment_status IN ('Active','Leave')))
+                AND (g.group_type='Company' OR (g.group_type='Team' AND g.team_id=e.team_id)
+                   OR (g.group_type='Department' AND g.department_id=e.department_id))
+                AND (g.group_type='Company'
+                    OR (g.group_type='Team' AND g.team_id=(SELECT team_id FROM public.employees WHERE employee_id=:id))
+                    OR (g.group_type='Department' AND g.department_id=(SELECT department_id FROM public.employees WHERE employee_id=:id)))
+                ORDER BY g.group_id'''),{'id':actor.employee_id,'subject':subject_id}).mappings().all()
+            surveys=c.execute(text('SELECT survey_id,reporting_period,end_date FROM public.q12_surveys ORDER BY start_date DESC')).mappings().all()
             results=[]
             for group in groups:
                 for survey in surveys:
@@ -118,3 +140,35 @@ class WorkspaceRepository:
                     results.append({'group_id':group['group_id'],'survey_id':survey['survey_id'],'suppressed':bool(hidden),'items':[dict(r) for r in rows]})
             return {'groups':[dict(g) for g in groups],'surveys':[dict(s) for s in surveys],'results':results,
                     'scope_note':'Synthetic group engagement context, not employee performance. Groups with fewer than five responses or a suppression flag are hidden. Benchmarks are synthetic.'}
+
+    def email_context(self, actor: Actor, subject_id: int, terms: list[str]):
+        """Bounded message retrieval; a direct report's other mail is never returned."""
+        if subject_id != actor.employee_id and actor.role != 'manager':
+            raise DemoError(403, 'access_denied', 'Manager access required.')
+        patterns = ['%' + term.lower() + '%' for term in terms[:8]]
+        matching = ' OR '.join(
+            f"lower(COALESCE(m.subject,'') || ' ' || m.body) LIKE :term_{i}"
+            for i in range(len(patterns))
+        ) or 'TRUE'
+        with self.database.read() as c:
+            rows = c.execute(text(f'''SELECT m.email_id,m.thread_id,m.sender_id,m.sent_at,m.subject,m.body
+                FROM public.email_records m
+                JOIN (SELECT email_id FROM public.email_records WHERE sender_id=:actor
+                      UNION SELECT email_id FROM public.email_recipients WHERE recipient_id=:actor) actor_messages
+                    ON actor_messages.email_id=m.email_id
+                JOIN (SELECT email_id FROM public.email_records WHERE sender_id=:subject
+                      UNION SELECT email_id FROM public.email_recipients WHERE recipient_id=:subject) subject_messages
+                    ON subject_messages.email_id=m.email_id
+                WHERE EXISTS (SELECT 1 FROM public.employees a WHERE a.employee_id=:actor AND a.employment_status='Active')
+                AND (:subject=:actor OR (
+                    EXISTS (SELECT 1 FROM public.employees e WHERE e.employee_id=:subject
+                        AND e.supervisor_id=:actor AND e.employee_id<>:actor AND e.employment_status IN ('Active','Leave'))
+))
+                AND ({matching})
+                ORDER BY m.sent_at DESC,m.email_id DESC LIMIT 12'''),
+                {'actor':actor.employee_id,'subject':subject_id, **{f'term_{i}':p for i,p in enumerate(patterns)}}).mappings().all()
+            # Do not return recipient lists: avoids exposing BCC metadata in prompts.
+            return [Record(record_id=f"email_records:{r['email_id']}",category='email',
+                           title=r['subject'] or '(No subject)',date=scalar(r['sent_at']),
+                           fields={'thread_id':r['thread_id'],'sent_at':scalar(r['sent_at']),
+                                   'body':r['body'],'synthetic':True}) for r in rows]

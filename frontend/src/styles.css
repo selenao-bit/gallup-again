@@ -917,3 +917,20 @@ ul {
 .tabs {overflow-x:auto;}
 .employee-workspace textarea,.assistant-panel textarea {width:100%;box-sizing:border-box;}
 @media(max-width:700px){.summary-grid{grid-template-columns:repeat(2,minmax(0,1fr));}.record-fields{grid-template-columns:1fr;}}
+.task-progress { margin: 0 24px 24px; }
+.task-progress meter { display:block; width:100%; margin-top:12px; }
+.metric-value.unavailable { font-size:1.25rem; line-height:1.4; }
+.review-chart-figure { margin: 20px 0 28px; }
+.review-chart-figure .review-chart { display: block; width: 100%; max-height: none; overflow: visible; }
+.review-chart-figure figcaption { color: #61758b; font-size: .82rem; margin-top: 8px; }
+.review-axis-label { fill: #61758b; font-size: 11px; }
+.review-grid-line { stroke: #d7dfe5; stroke-width: 1; }
+.review-trend-line { stroke: #366b94; stroke-width: 2.5; fill: none; vector-effect: non-scaling-stroke; }
+.review-point { cursor: crosshair; outline: none; }
+.review-hit { fill: transparent; stroke: transparent; }
+.review-dot { fill: #14283f; stroke: #fff; stroke-width: 1.5; }
+.review-point:focus .review-hit { stroke: #366b94; stroke-width: 2; }
+.review-tooltip { pointer-events: none; }
+.review-tooltip rect { fill: #14283f; }
+.review-tooltip text { fill: #fff; font-size: 12px; }
+.review-tooltip-period { font-weight: 600; }

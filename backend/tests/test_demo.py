@@ -103,7 +103,7 @@ def test_live_response_citations_are_retrieved_only(monkeypatch,cited,expected):
     wrapper = Mock()
     wrapper.__enter__ = Mock(return_value=client)
     wrapper.__exit__ = Mock(return_value=False)
-    monkeypatch.setattr(module,'OpenAI',Mock(return_value=wrapper))
+    monkeypatch.setattr(module,'create_client',Mock(return_value=wrapper))
     service = Mock()
     service.overview.return_value = dashboard
     assistant = Assistant(service,Settings(database_url=URL,assistant_mode='openai',openai_api_key='fixture-key'))

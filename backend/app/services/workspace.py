@@ -9,7 +9,8 @@ class WorkspaceService:
     def personas(self):
         rows=self.repository.personas()
         return PersonaList(personas=[Persona(employee_id=r['employee_id'], display_name=r['display_name'],
-            role='manager' if r['has_reports'] else 'employee') for r in rows], assistant_mode=self.settings.assistant_mode)
+            role='manager' if r['has_reports'] else 'employee') for r in rows], assistant_mode=self.settings.assistant_mode,
+            assistant_available=self.settings.assistant_available)
 
     def resolve(self, employee_id):
         row=self.repository.persona(employee_id)

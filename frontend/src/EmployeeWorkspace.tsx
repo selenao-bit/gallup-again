@@ -1,22 +1,40 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { demoRequest } from './api/demo'
-import type { Current, Employee } from './api/demo'
+import type { Current, Employee, Metric } from './api/demo'
 import { Q12_DISCUSS, Q12_SHORT } from './q12'
+import ReviewChart from './ReviewChart'
 
 export interface RecordItem { record_id: string; category: string; title: string; status: string | null; date: string | null; fields: Record<string, string | number | boolean | null> }
-interface Bundle { employee: Employee; records: RecordItem[]; counts: Record<string, number>; gaps: string[] }
+interface Bundle { employee: Employee; records: RecordItem[]; counts: Record<string, number>; gaps: string[]; task_progress?: Metric | null }
 interface AIAnswer { content: { answer: string; discussion_questions: string[]; data_gaps: string[]; cited_record_ids: string[] }; sources: RecordItem[] }
 interface Message { email_id: number; thread_id: number; sender_id: number; sender_name: string; sent_at: string; subject: string | null; body: string; has_attachments: boolean; recipients: { recipient_id: number; recipient_type: string; name: string }[] }
 interface Inbox { addresses: string[]; messages: Message[]; next_before: number | null; scope_note: string }
 interface QItem { question_id: string; text: string; element: string; engagement_need: string; mean_score: number | null; top_box_pct: number | null; benchmark_pct: number | null; response_count: number; score_1_count: number; score_2_count: number; score_3_count: number; score_4_count: number; score_5_count: number }
 interface Engagement { groups: {group_id:number; group_name:string; group_type:string}[]; surveys: {survey_id:number; reporting_period:string}[]; results: {group_id:number; survey_id:number; suppressed:boolean; items:QItem[]}[]; scope_note:string }
 const tabs = ['My work and goals', 'My reviews', 'Team engagement (Q12)', 'Ask my record', "What is and isn't used"]
-const questions = ['What goals did I have last year, and how did they turn out?', 'What did I say I wanted to develop in my self-assessments?', 'Which of my tasks were late, cancelled or needed revisions?', 'What training have I completed, and what is still open?']
+const questions = ['What goals did I have last year, and how did they turn out?', 'What did I say I wanted to develop in my self-assessments?', 'Which of my tasks were late, cancelled or needed revisions?', 'What training have I completed, and what is still open?', 'What do my recent emails discuss?', 'What do the Q12 results say about my team?']
 const label = (s: string) => s.replaceAll('_', ' ').replace(/^./, x => x.toUpperCase())
 const value = (v: unknown) => v == null ? 'Not recorded' : typeof v === 'boolean' ? v ? 'Yes' : 'No' : String(v)
 
+function recordValue(record: RecordItem, key: string, v: unknown) {
+  if (v != null) return typeof v === 'number' && key.endsWith('_pct') ? `${v}%` : value(v)
+  if (key === 'task_completion_pct') return 'Not applicable: no tasks assigned in this review quarter'
+  if (key === 'start_date' && record.status?.toLowerCase().replaceAll(' ', '') === 'notstarted') return 'Not started yet'
+  if (['complete_date', 'completion_date'].includes(key) && record.status !== 'Complete' && record.status !== 'Completed') return 'Not completed'
+  if (key === 'certification_expiry' && record.fields.certification_awarded === false) return 'No certification awarded'
+  return value(v)
+}
+
+export function TaskProgress({metric}: {metric: Metric | null | undefined}) {
+  if (!metric) return <section className="metric-card"><h3>Task completion rate</h3><p>Task summary is unavailable. Retry loading the record.</p></section>
+  const available = metric.completion_pct !== null
+  return <section className="metric-card task-progress"><h3>Task completion rate</h3><strong className="summary-count">{available ? `${metric.completion_pct}%` : metric.total === 0 ? 'No assigned tasks' : 'No eligible tasks'}</strong>
+    {available && <meter aria-label="Task completion rate" min={0} max={100} value={metric.completion_pct ?? 0} />}
+    <p>{metric.completed} completed · {metric.denominator} eligible · {metric.total} total assigned</p><small>All-time records. {metric.definition} {available ? '' : 'A percentage does not apply when there are no eligible assignments.'}</small></section>
+}
+
 export function Records({ records }: { records: RecordItem[] }) {
-  return <div className="record-list">{!records.length && <p className="muted">No records are available in this category.</p>}{records.map(r => <details className="source" key={r.record_id}><summary><strong>{r.title}</strong> {r.status && <span className="tag">{r.status}</span>}<small> · {r.date?.slice(0,10) ?? 'Date not recorded'}</small></summary><dl className="record-fields">{Object.entries(r.fields).map(([k,v]) => <div key={k}><dt>{label(k)}</dt><dd>{value(v)}</dd></div>)}</dl><code>{r.record_id}</code></details>)}</div>
+  return <div className="record-list">{!records.length && <p className="muted">No records are available in this category.</p>}{records.map(r => <details className="source" key={r.record_id}><summary><strong>{r.title}</strong> {r.status && <span className="tag">{r.status}</span>}<small> · {r.date?.slice(0,10) ?? 'Date not recorded'}</small></summary><dl className="record-fields">{Object.entries(r.fields).map(([k,v]) => <div key={k}><dt>{label(k)}</dt><dd>{recordValue(r,k,v)}</dd></div>)}</dl><code>{r.record_id}</code></details>)}</div>
 }
 export function Conversation({ actorId, subjectId, manager=false, engagement=false, prompt }: { actorId:number; subjectId:number; manager?:boolean; engagement?:boolean; prompt?:string }) {
   const [question,setQuestion]=useState(prompt ?? '')
@@ -25,9 +43,12 @@ export function Conversation({ actorId, subjectId, manager=false, engagement=fal
   const [draft,setDraft]=useState('')
   const [busy,setBusy]=useState(false)
   const [error,setError]=useState('')
-  const [controller]=useState(() => new AbortController())
-  useEffect(() => () => controller.abort(),[controller])
+  const request = useRef<AbortController | null>(null)
+  useEffect(() => () => request.current?.abort(),[])
   async function ask() {
+    if (request.current || !question.trim()) return
+    const controller = new AbortController()
+    request.current = controller
     setBusy(true); setError(''); setAnswer(null)
     try {
       const path=manager ? `/manager/reports/${subjectId}/conversation` : engagement ? '/employee/engagement/prepare' : '/employee/chat'
@@ -36,9 +57,12 @@ export function Conversation({ actorId, subjectId, manager=false, engagement=fal
       setAnswer(result); setHistory(h=>[...h,{question,answer:result}])
       setDraft(`Conversation preparation — editable draft\n\nContext and accomplishments\n${result.content.answer}\n\nDiscussion questions\n${result.content.discussion_questions.join('\n')}\n\nDevelopment, support and follow-up\n[Add your own agreed discussion points.]\n\nSources\n${result.sources.map(s=>`${s.record_id}: ${s.title}`).join('\n')}\n\nData gaps\n${result.content.data_gaps.join('\n')}`)
     } catch(e) { if (!controller.signal.aborted) setError(e instanceof Error ? e.message : 'Unable to prepare an answer.') }
-    finally { if (!controller.signal.aborted) setBusy(false) }
+    finally {
+      if (request.current === controller) request.current = null
+      if (!controller.signal.aborted) setBusy(false)
+    }
   }
-  return <section><h3>{manager ? 'Start the Conversation' : engagement ? 'Prepare for a State of the Team conversation' : 'Ask questions about your own record'}</h3><p className="muted">On-demand answers use permitted records and cite their sources. Email is excluded from AI context. Each question is answered independently.</p>
+  return <section><h3>{manager ? 'Start the Conversation' : engagement ? 'Prepare for a State of the Team conversation' : 'Ask questions about your own record'}</h3><p className="muted">On-demand answers use permitted records and cite their sources. Email questions use only synthetic messages you sent or received; Q12 questions use permitted group results. Each question is answered independently.</p>
     {!manager && !engagement && <div className="status-list">{questions.map(q=><button className="secondary" key={q} onClick={()=>setQuestion(q)}>{q}</button>)}</div>}
     <form onSubmit={e=>{e.preventDefault();void ask()}}><label>Your question or draft thoughts<textarea value={question} maxLength={2000} rows={5} onChange={e=>setQuestion(e.target.value)}/></label><button disabled={busy || !question.trim()}>{busy?'Reading permitted records…':engagement?'Help me prepare':'Prepare with AI'}</button></form>
     {error && <p className="error" role="alert">{error}</p>}
@@ -76,10 +100,10 @@ export default function EmployeeWorkspace({actor}:{actor:Current}) {
   if(!bundle)return <p role="status">Loading your own record…</p>
   const records=(category:string)=>bundle.records.filter(r=>r.category===category)
   const reviews=records('reviews').slice().sort((a,b)=>String(a.fields.review_period).localeCompare(String(b.fields.review_period)))
-  return <section className="employee-workspace"><header className="employee-header"><div><p className="eyebrow">My workspace</p><h2>Hello, {actor.persona.display_name.split(' ')[0]}.</h2><p>Your work, your growth, and your record.</p></div></header><div className="summary-grid">{['goals','reviews','training','tasks'].map(c=><section className="metric-card" key={c}><p>{label(c)}</p><strong className="summary-count">{bundle.counts[c]??0}</strong></section>)}</div><nav className="tabs" aria-label="My workspace sections">{tabs.map((t,i)=><button className={tab===i?'current':''} key={t} onClick={()=>setTab(i)}>{t}</button>)}</nav><div className="tab-content">
+  return <section className="employee-workspace"><header className="employee-header"><div><p className="eyebrow">My workspace</p><h2>Hello, {actor.persona.display_name.split(' ')[0]}.</h2><p>Your work, your growth, and your record.</p></div></header><div className="summary-grid">{['goals','reviews','training','tasks'].map(c=><section className="metric-card" key={c}><p>{label(c)}</p><strong className="summary-count">{bundle.counts[c]??0}</strong></section>)}</div><TaskProgress metric={bundle.task_progress}/><nav className="tabs" aria-label="My workspace sections">{tabs.map((t,i)=><button className={tab===i?'current':''} key={t} onClick={()=>setTab(i)}>{t}</button>)}</nav><div className="tab-content">
     {tab===0&&<><h3>Goals</h3><Records records={records('goals')}/><h3>Projects and tasks</h3><Records records={records('tasks')}/><h3>Training and development</h3><Records records={records('training')}/><Emails actorId={id}/></>}
-    {tab===1&&<><h3>Your review history</h3><p className="muted">Recorded overall ratings, on a fixed 1–5 scale. These are source ratings, not AI evaluations.</p><svg className="review-chart" viewBox="0 0 720 240" role="img" aria-label="Recorded review ratings on a fixed one to five scale">{[1,2,3,4,5].map(n=><g key={n}><line x1={30} x2={700} y1={210-(n-1)*45} y2={210-(n-1)*45} stroke="#d7dfe5"/><text x={10} y={215-(n-1)*45}>{n}</text></g>)}{reviews.map((r,i)=>typeof r.fields.rating_overall==='number'?<g key={r.record_id}><circle cx={50+i*630/Math.max(reviews.length-1,1)} cy={210-(r.fields.rating_overall-1)*45} r={5} fill="#366b94"><title>{r.title}: {r.fields.rating_overall}</title></circle></g>:null)}</svg><Records records={reviews}/><h3>Your self-assessments</h3><Records records={records('self_assessments')}/></>}
+    {tab===1&&<><h3>Your review history</h3><p className="muted">Recorded overall ratings, on a fixed 1–5 scale. These are source ratings, not AI evaluations.</p><ReviewChart reviews={reviews}/><Records records={reviews}/><h3>Your self-assessments</h3><Records records={records('self_assessments')}/></>}
     {tab===2&&<TeamEngagement actorId={id}/>}{tab===3&&<Conversation actorId={id} subjectId={id}/>}
-    {tab===4&&<><h3>What this tool uses about you</h3><ul>{Object.entries(bundle.counts).map(([c,n])=><li key={c}>{label(c)}: {n} records</li>)}</ul><h3>What it never uses for AI preparation</h3><p>Private manager notes, peer feedback, email content, surveillance, protected characteristics, health/family information, or individual survey responses. Viewing your own synthetic inbox does not add email to AI context.</p><p>Group Q12 results are available only when reportable. Chats and draft edits remain in browser state; durable audit and employee-visible prep activity are not yet implemented.</p><ul>{bundle.gaps.map(g=><li key={g}>{g}</li>)}</ul></>}
+    {tab===4&&<><h3>What this tool uses about you</h3><ul>{Object.entries(bundle.counts).map(([c,n])=><li key={c}>{label(c)}: {n} records</li>)}</ul><h3>What it never uses for AI preparation</h3><p>Private manager notes, peer feedback, surveillance, protected characteristics, health/family information, or individual survey responses. Email questions can use permitted synthetic messages you sent or received. Q12 remains group-level context.</p><p>Group Q12 results are available only when reportable. Chats and draft edits remain in browser state; durable audit and employee-visible prep activity are not yet implemented.</p><ul>{bundle.gaps.map(g=><li key={g}>{g}</li>)}</ul></>}
     </div></section>
 }

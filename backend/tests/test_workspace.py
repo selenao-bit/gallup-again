@@ -99,7 +99,7 @@ def test_workspace_ai_validates_source_ids_and_bounds_text(monkeypatch,cited,val
     factory=Mock()
     factory.return_value.__enter__=Mock(return_value=client)
     factory.return_value.__exit__=Mock(return_value=False)
-    monkeypatch.setattr(module,'OpenAI',factory)
+    monkeypatch.setattr(module,'create_client',factory)
     assistant=module.WorkspaceAssistant(repo,Settings(database_url=URL,assistant_mode='openai',openai_api_key='test-only'))
     if valid:
         result=assistant.answer(Actor(2,'employee'),2,'What is my goal?')
@@ -112,3 +112,32 @@ def test_workspace_ai_validates_source_ids_and_bounds_text(monkeypatch,cited,val
     assert 'tools' not in kwargs
     assert 'x'*1201 not in kwargs['input'][1]['content']
     repo.bundle.assert_called_once_with(Actor(2,'employee'),2)
+
+@pytest.mark.parametrize('mode,key,expected',[('simulated','private-test-key',False),('openai','',False),('openai','private-test-key',True)])
+def test_catalog_reports_ai_readiness_without_exposing_key(mode,key,expected):
+    from app.services.workspace import WorkspaceService
+    repo=Mock()
+    repo.personas.return_value=[{'employee_id':2,'display_name':'Synthetic','has_reports':False}]
+    service=WorkspaceService(repo,Settings(database_url=URL,assistant_mode=mode,openai_api_key=key))
+    catalog=service.personas()
+    assert catalog.assistant_available is expected
+    assert 'private-test-key' not in catalog.model_dump_json()
+
+
+def test_rate_limit_error_is_actionable_and_does_not_expose_provider_body(monkeypatch):
+    from app.ai import workspace as module
+    from app.workspace_models import RecordBundle
+    from app.demo_models import EmployeeSummary
+    from openai import RateLimitError
+    import httpx
+    repo=Mock()
+    repo.bundle.return_value=RecordBundle(employee=EmployeeSummary(employee_id=2,display_name='Test',position_title='Analyst',department_name=None,employment_status='Active'),records=[],counts={},gaps=[])
+    response=httpx.Response(429,request=httpx.Request('POST','https://example.test/responses'))
+    wrapper=Mock();client=Mock()
+    wrapper.__enter__=Mock(return_value=client);wrapper.__exit__=Mock(return_value=False)
+    client.responses.parse.side_effect=RateLimitError('private-provider-details',response=response,body={'message':'private-provider-details'})
+    monkeypatch.setattr(module,'create_client',Mock(return_value=wrapper))
+    assistant=module.WorkspaceAssistant(repo,Settings(database_url=URL,assistant_mode='openai',openai_api_key='test-only'))
+    with pytest.raises(DemoError) as error:assistant.answer(Actor(2,'employee'),2,'hello')
+    assert error.value.status==429 and error.value.code=='assistant_rate_limited'
+    assert 'private-provider-details' not in error.value.message
