@@ -1,0 +1,10 @@
+# Runtime dependencies tested for TASK-002 (Python 3.13.5).
+fastapi==0.162.0
+pydantic==2.14.1
+SQLAlchemy==2.0.55
+psycopg[binary]==3.3.6
+uvicorn==0.54.0
+python-dotenv==1.2.4
+
+# Official SDK for opt-in live mode; real API execution remains unverified.
+openai==3.40.0
